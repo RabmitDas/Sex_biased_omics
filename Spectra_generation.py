@@ -2,6 +2,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+from multiprocessing import Pool, cpu_count
 
 # Function to generate Lorentzian peak
 def lorentzian(x, x0, gamma, A):
@@ -59,3 +60,62 @@ all_spectra_df = pd.concat([pd.DataFrame(data["Spectrum"], columns=[data["Compou
 transposed_df = all_spectra_df.transpose()
 # Save spectrum data to CSV file
 transposed_df.to_csv(output_file)
+
+# Define a function to generate synthetic NMR data for a single mixture
+def generate_mixture(args):
+    i, num_mixtures, ppm_range, spectra_df, concentration_range_df = args
+    concentrations_list = []
+    mixture_spectrum = np.zeros(len(ppm_range))
+    for j in range(1, len(spectra_df.columns)):
+        compound_name = spectra_df.columns[j]
+        min_concentration_str = concentration_range_df.loc[concentration_range_df['Compounds'] == compound_name, "Minimum Concentration (µM/mM creatinine)"].values[0]
+        max_concentration_str = concentration_range_df.loc[concentration_range_df['Compounds'] == compound_name, "Maximum Concentration (µM/mM creatinine)"].values[0]
+        min_concentration = float(min_concentration_str)
+        max_concentration = float(max_concentration_str)
+        concentration = np.random.uniform(min_concentration, max_concentration)
+        concentrations_list.append(concentration)
+        scaled_spectrum = spectra_df.iloc[:, j] * concentration
+        mixture_spectrum += scaled_spectrum
+    noise_level = 0.2
+    mixture_spectrum += noise_level * np.random.normal(size=len(ppm_range))
+    return i, pd.DataFrame({f'Sample_{i}': mixture_spectrum}), pd.DataFrame({f'Sample_{i}': concentrations_list})
+
+# Define a function to save the DataFrame to CSV
+def save_to_csv(data, filename):
+    data.to_csv(filename, index=False)
+
+if __name__ == '__main__':
+    # Define parameters
+    num_mixtures = 200000
+    output_dir = "/home/group5/"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Read the CSV files
+    spectra_df = pd.read_csv("/home/group5/myenv/CSV/Indivisual_spectra.csv")
+    concentration_range_df = pd.read_csv("/home/group5/myenv/CSV/Urine Metabolome - Sheet1.csv")
+    ppm_range = spectra_df.iloc[:, 0]
+
+    # Create pool of worker processes
+    pool = Pool(cpu_count())
+
+    # Generate synthetic NMR data for each mixture using multiprocessing
+    args = [(i, num_mixtures, ppm_range, spectra_df, concentration_range_df) for i in range(num_mixtures)]
+    results = pool.map(generate_mixture, args)
+
+    # Concatenate all spectra data into a DataFrame
+    all_spectra_data = [result[1] for result in results]
+    all_label_data = [result[2] for result in results]
+    all_spectra_df = pd.concat(all_spectra_data, axis=1)
+    all_label_df = pd.concat(all_label_data, axis=1)
+    Data_df = all_spectra_df.transpose()
+    Label_df = all_label_df.transpose()
+    # Save the DataFrame to CSV files using multiprocessing
+    pool.apply_async(save_to_csv, (Data_df, os.path.join(output_dir, 'Data.csv')))
+    pool.apply_async(save_to_csv, (Label_df, os.path.join(output_dir, 'Label.csv')))
+
+    # Close the pool and wait for all tasks to complete
+    pool.close()
+    pool.join()
+
+    print("Job Done")
